@@ -1,0 +1,4 @@
+google-genai
+nbformat
+python-dotenv
+strands-decider==0.1.0

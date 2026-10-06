@@ -150,6 +150,7 @@ MenuItem
 - currency
 - variants[]
 - variation_groups[]
+- inferred_description: optional provenance-aware value
 - ingredients[]
 - allergens[]
 - dietary_attributes[]
@@ -294,6 +295,14 @@ Sparse menu records can be enriched with non-safety semantic attributes such as:
 - comfort food
 
 All inferred attributes must be marked as inferred. The LLM may propose likely ingredients for retrieval context, but unverified ingredients must not be used to guarantee allergy or dietary suitability.
+
+For the prototype, Gemini generates short descriptions only when source text is
+missing or is a placeholder. Strands Decider 2B runs locally to score a closed,
+versioned tag and scale vocabulary. Tags are applied automatically at a 0.7
+threshold, except broadly positive `shareable` and `comfort_food` tags. Generated
+descriptions and accepted tags use `AttributedValue` provenance and are never
+used for allergen, dietary, price, or availability decisions. Model outputs are
+cached by their input content, model, prompt, and vocabulary versions.
 
 ### 9.2 Embedding unit
 
@@ -652,16 +661,17 @@ These traces are essential for distinguishing retrieval failures, extraction fai
 - Deterministic code will enforce factual constraints and calculate prices.
 - Exact matches and nearest alternatives will be represented separately.
 - Safety constraints will not be relaxed.
+- Immutable data classes are the canonical model representation.
+- Gemini free tier generates guarded inferred descriptions for sparse items.
+- Strands Decider 2B scores semantic tags and scales locally; tags are applied automatically at a 0.7 threshold.
 
 ## 20. Open decisions
 
 These choices should be made close to implementation, after a small experiment where appropriate:
 
-- LLM provider and model.
+- LLM provider and model for intent extraction and response generation.
 - Embedding provider and model.
 - Local in-memory vector library for the first notebook.
-- Typed model library: Pydantic, data classes, or another option.
-- Whether menu enrichment happens automatically or requires review.
 - Policy for recommending an item whose availability is unknown.
 - Exact boundary between a hard constraint and a soft preference.
 - Reranking method: heuristics, embedding score, LLM reranker, or a combination.
@@ -687,3 +697,5 @@ Record future architectural decisions here so changes remain understandable.
 | 2026-09-27 | Use hybrid RAG rather than vector search alone | Semantic retrieval does not reliably enforce numeric or safety constraints | Accepted |
 | 2026-09-27 | Normalize API and PDF inputs into one model | Keeps retrieval and recommendation independent of source format | Accepted |
 | 2026-09-27 | Ground LLM output in validated menu candidates | Prevents invented items and incorrect factual claims | Accepted |
+| 2026-10-05 | Use immutable data classes for the canonical domain model | Keeps normalization and enrichment transformations explicit and testable | Accepted |
+| 2026-10-05 | Use Gemini for guarded missing descriptions and local Strands Decider 2B for semantic scoring | Improves sparse-item retrieval while keeping inferred data separate from safety facts | Accepted |

@@ -24,6 +24,16 @@ class Availability:
 
 
 @dataclass(frozen=True)
+class AttributedValue:
+    """A value together with where it came from and supporting metadata."""
+
+    value: str
+    origin: str
+    confidence: float | None = None
+    evidence: str | None = None
+
+
+@dataclass(frozen=True)
 class Category:
     id: str
     name: str
@@ -79,11 +89,12 @@ class MenuItem:
     ingredients: tuple[str, ...] | None
     allergens: tuple[str, ...]
     dietary_attributes: tuple[str, ...]
-    semantic_attributes: tuple[str, ...]
+    semantic_attributes: tuple[AttributedValue, ...]
     availability: Availability
     source_reference: SourceReference
     embedding_text: str
     variation_groups: tuple[VariationGroup, ...] = ()
+    inferred_description: AttributedValue | None = None
 
 
 @dataclass(frozen=True)
