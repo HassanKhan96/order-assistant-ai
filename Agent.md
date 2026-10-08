@@ -20,6 +20,7 @@ source of truth for intended behavior and scope.
 - `menu_enrichment.py`: local semantic scoring and immutable enrichment application.
 - `enrichment_cache.py`: atomic, resumable JSON cache for model outputs.
 - `02_semantic_enrichment.ipynb`: enrichment workflow, inspection, and quality comparison.
+- `03_dietary_inference.ipynb`: cached, unverified vegetarian and vegan suggestions for discovery experiments.
 - `requirements-enrichment.txt`: optional Gemini and Strands dependencies.
 - `test_semantic_enrichment.py`: offline enrichment, cache, and adapter tests.
 

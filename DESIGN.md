@@ -304,6 +304,11 @@ descriptions and accepted tags use `AttributedValue` provenance and are never
 used for allergen, dietary, price, or availability decisions. Model outputs are
 cached by their input content, model, prompt, and vocabulary versions.
 
+A separate dietary experiment may infer `likely vegetarian` and `likely vegan`
+for discovery and ranking. These suggestions remain distinct from source-declared
+dietary attributes, are never used as verified facts or hard constraints, and do
+not infer allergens, gluten-free status, halal, kosher, or cross-contamination.
+
 ### 9.2 Embedding unit
 
 Create one retrievable document per purchasable item or variant. Avoid embedding an entire menu as a single document because it weakens retrieval precision and makes item-level provenance difficult.
