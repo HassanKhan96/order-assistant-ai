@@ -304,12 +304,59 @@ descriptions and accepted tags use `AttributedValue` provenance and are never
 used for allergen, dietary, price, or availability decisions. Model outputs are
 cached by their input content, model, prompt, and vocabulary versions.
 
-A separate dietary experiment may infer `likely vegetarian` and `likely vegan`
-for discovery and ranking. These suggestions remain distinct from source-declared
-dietary attributes, are never used as verified facts or hard constraints, and do
-not infer allergens, gluten-free status, halal, kosher, or cross-contamination.
+A separate dietary inference step follows description enrichment and precedes
+retrieval-document construction:
 
-### 9.2 Embedding unit
+```text
+normalize -> validate -> describe -> score semantics -> infer dietary hints -> build retrieval documents
+```
+
+### 9.2 Dietary inference
+
+Most restaurant APIs do not provide complete dietary or allergen metadata. The
+prototype therefore permits a narrow inference experiment for discovery while
+preserving the distinction between restaurant facts and model suggestions.
+
+The experiment classifies only vegetarian and vegan likelihood. Each item gets
+one of three labels for each attribute:
+
+- `likely`: the supplied name, category, description, and choices strongly
+  support the classification.
+- `unlikely`: the supplied text contains evidence against the classification.
+- `unknown`: the evidence is missing, ambiguous, or configurable choices can
+  materially change the answer.
+
+Its cached result shape is:
+
+```text
+DietaryInferenceResult
+- item_id
+- vegetarian: likely | unlikely | unknown
+- vegan: likely | unlikely | unknown
+- reason
+- origin: inferred
+- model_id
+- prompt_version
+- input_hash
+```
+
+Inputs are limited to menu text and completed inferred descriptions. Results are
+cached separately from the canonical menu and invalidated when the input text,
+model, or prompt version changes. This keeps `MenuItem.dietary_attributes`
+reserved for source-declared or manually confirmed facts.
+
+Dietary hints may improve semantic discovery or soft-preference ranking. They
+must not satisfy a hard dietary constraint, be presented as verified, or be
+silently promoted into `dietary_attributes`. If a strict request has only
+inferred candidates, they may be shown only as explicitly unverified alternatives
+that require confirmation with the restaurant.
+
+The system does not infer allergens, allergen absence, gluten-free status,
+halal, kosher, health claims, or cross-contamination. Missing or empty restaurant
+data remains `unknown`; it never means that an item is safe or contains no
+allergens.
+
+### 9.3 Embedding unit
 
 Create one retrievable document per purchasable item or variant. Avoid embedding an entire menu as a single document because it weakens retrieval precision and makes item-level provenance difficult.
 
@@ -327,7 +374,7 @@ Semantic attributes: sweet, rich, warm dessert
 
 Price is included as useful context, but numerical budget enforcement must use structured metadata rather than embedding similarity.
 
-### 9.3 Indexes
+### 9.4 Indexes
 
 The initial retrieval layer should support:
 
