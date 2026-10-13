@@ -275,6 +275,37 @@ def _tag_row(result: TagResult) -> dict[str, Any]:
     }
 
 
+def load_cached_tags(
+    menu: Menu,
+    descriptions: Sequence[DescriptionResult],
+    cache: EnrichmentCache,
+    *,
+    require_all: bool = False,
+) -> tuple[TagResult, ...]:
+    """Load matching, validated scores without constructing or calling a model."""
+    if cache.menu_id != menu.id:
+        raise ValueError("enrichment cache belongs to a different menu")
+    validate_menu(menu).raise_for_errors()
+    description_by_id = {row.item_id: row for row in descriptions}
+    results = []
+    missing = []
+    for item in menu.items:
+        item_text = describe_item(item, menu, description_by_id.get(item.id))
+        digest = content_hash(json.dumps(asdict(item_text), sort_keys=True, separators=(",", ":")))
+        row = cache.tags.get(item.id)
+        if (isinstance(row, Mapping) and row.get("input_hash") == digest
+                and row.get("vocabulary_version") == VOCABULARY_VERSION
+                and isinstance(row.get("model_id"), str) and row["model_id"].strip()):
+            result = _tag_from_row(item.id, row)
+            _validate_scores(result.scores)
+            results.append(result)
+        else:
+            missing.append(item.id)
+    if require_all and missing:
+        raise ValueError(f"enrichment cache has no current semantic scores for {len(missing)} items: {missing[:5]}")
+    return tuple(results)
+
+
 def score_menu(
     menu: Menu,
     descriptions: Sequence[DescriptionResult],
@@ -282,6 +313,7 @@ def score_menu(
     cache: EnrichmentCache,
     *,
     cache_path: str | os.PathLike[str] | None = None,
+    cache_saver: Callable[[EnrichmentCache], None] | None = None,
     save_every: int = 25,
     progress: Callable[[int, int], None] | None = None,
 ) -> tuple[TagResult, ...]:
@@ -335,6 +367,8 @@ def score_menu(
                 newly_scored += 1
                 if cache_path is not None and newly_scored % save_every == 0:
                     cache.save(cache_path)
+                if cache_saver is not None and newly_scored % save_every == 0:
+                    cache_saver(cache)
                 if progress is not None and (
                     newly_scored % 25 == 0 or newly_scored == total_to_score
                 ):
@@ -346,6 +380,8 @@ def score_menu(
     finally:
         if cache_path is not None:
             cache.save(cache_path)
+        if cache_saver is not None:
+            cache_saver(cache)
         if progress is not None and newly_scored != last_reported:
             progress(newly_scored, total_to_score)
     return tuple(results[item.id] for item in menu.items)

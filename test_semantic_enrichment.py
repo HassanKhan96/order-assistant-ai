@@ -197,6 +197,20 @@ class DescriptionTests(unittest.TestCase):
             self.assertIn("one", loaded.descriptions)
             self.assertNotIn("two", loaded.descriptions)
 
+        saved = []
+        cache = EnrichmentCache(menu.id)
+        generator = FakeGenerator({"one": "First description."}, fail_on_call=2)
+        with self.assertRaises(DescriptionGenerationError):
+            generate_descriptions(
+                menu,
+                generator,
+                cache,
+                batch_size=1,
+                cache_saver=lambda value: saved.append(dict(value.descriptions)),
+            )
+        self.assertIn("one", saved[-1])
+        self.assertNotIn("two", saved[-1])
+
     def test_loads_completed_descriptions_without_a_generator(self):
         menu = _menu()
         cache = EnrichmentCache(menu.id)
@@ -248,17 +262,17 @@ class GeminiAdapterTests(unittest.TestCase):
         client.assert_called_once_with(api_key="new-key")
 
     def test_parses_rows_and_ignores_unrequested_ids(self):
-        response = SimpleNamespace(text=json.dumps([
+        response = SimpleNamespace(text=json.dumps({"items": [
             {"item_id": "one", "status": "described", "description": " A dish. "},
             {"item_id": "other", "status": "described", "description": "Ignore"},
-        ]), parsed=None)
+        ]}), parsed=None)
         client = SimpleNamespace(models=FakeModels([response]))
         generator = GeminiDescriptionGenerator(client=client, sleep=lambda _: None)
         output = generator.generate([DescriptionRequest("one", "One", (), ())])
         self.assertEqual(output, {"one": "A dish."})
 
     def test_retries_server_errors_but_not_client_errors(self):
-        response = SimpleNamespace(text="[]", parsed=None)
+        response = SimpleNamespace(text='{"items": []}', parsed=None)
         models = FakeModels([HttpError(500), response])
         generator = GeminiDescriptionGenerator(
             client=SimpleNamespace(models=models), sleep=lambda _: None, clock=lambda: 0
@@ -291,7 +305,7 @@ class GeminiAdapterTests(unittest.TestCase):
             sleeps.append(seconds)
             now[0] += seconds
 
-        responses = [SimpleNamespace(text="[]", parsed=None)] * 2
+        responses = [SimpleNamespace(text='{"items": []}', parsed=None)] * 2
         generator = GeminiDescriptionGenerator(
             client=SimpleNamespace(models=FakeModels(responses)),
             requests_per_minute=10,
@@ -354,6 +368,19 @@ class EnrichmentTests(unittest.TestCase):
             loaded = EnrichmentCache.load(path, menu.id)
             self.assertIn("one", loaded.tags)
             self.assertNotIn("two", loaded.tags)
+
+        saved = []
+        cache = EnrichmentCache(menu.id)
+        with self.assertRaises(RuntimeError):
+            score_menu(
+                menu,
+                (),
+                FakeScorer(fail_on_call=2),
+                cache,
+                cache_saver=lambda value: saved.append(dict(value.tags)),
+            )
+        self.assertIn("one", saved[-1])
+        self.assertNotIn("two", saved[-1])
 
     def test_score_rejects_out_of_range_values_and_reports_progress(self):
         menu = _menu()

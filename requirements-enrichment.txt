@@ -1,4 +1,6 @@
 google-genai
+openai>=1.68,<3
+jsonschema>=4.18,<5
 nbformat
 python-dotenv
 strands-decider==0.1.0

@@ -9,6 +9,7 @@ import re
 import time
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
+from ai_adapters import AIAdapter, AIError
 from enrichment_cache import EnrichmentCache, content_hash
 from menu_normalization import Menu, MenuItem
 from menu_validation import validate_menu
@@ -221,6 +222,7 @@ def apply_description_overrides(
     overrides: Mapping[str, str],
     *,
     cache_path: str | os.PathLike[str] | None = None,
+    cache_saver: Callable[[EnrichmentCache], None] | None = None,
 ) -> int:
     """Validate and cache curated descriptions for matching menu items."""
     if cache.menu_id != menu.id:
@@ -252,66 +254,18 @@ def apply_description_overrides(
             applied += 1
     if cache_path is not None and applied:
         cache.save(cache_path)
+    if cache_saver is not None and applied:
+        cache_saver(cache)
     return applied
 
 
-class GeminiDescriptionGenerator:
-    """Batch description generator backed by the Google Gen AI SDK."""
+class AIDescriptionGenerator:
+    """Menu-specific prompt and parsing over any AIAdapter implementation."""
 
-    def __init__(
-        self,
-        *,
-        model: str = "gemini-2.5-flash",
-        requests_per_minute: float = 10,
-        client: Any | None = None,
-        api_key: str | None = None,
-        sleep: Callable[[float], None] = time.sleep,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        if requests_per_minute <= 0:
-            raise ValueError("requests_per_minute must be positive")
-        self.model_id = model
-        self.requests_per_minute = requests_per_minute
-        self._sleep = sleep
-        self._clock = clock
-        self._last_request_at: float | None = None
-        if client is None:
-            # Prefer project-local configuration over a stale inherited shell value.
-            load_dotenv(override=True)
-            key = api_key or os.environ.get("GEMINI_API_KEY")
-            if not key:
-                raise DescriptionGenerationError("GEMINI_API_KEY is required")
-            try:
-                from google import genai
-            except ImportError as exc:
-                raise DescriptionGenerationError(
-                    "google-genai is required to generate descriptions"
-                ) from exc
-            client = genai.Client(api_key=key)
-        self._client = client
-
-    def _wait_for_slot(self) -> None:
-        if self._last_request_at is None:
-            return
-        interval = 60.0 / self.requests_per_minute
-        remaining = interval - (self._clock() - self._last_request_at)
-        if remaining > 0:
-            self._sleep(remaining)
-
-    @staticmethod
-    def _status_code(exc: Exception) -> int | None:
-        for attribute in ("status_code", "code"):
-            value = getattr(exc, attribute, None)
-            if callable(value):
-                try:
-                    value = value()
-                except TypeError:
-                    value = None
-            try:
-                return int(value) if value is not None else None
-            except (TypeError, ValueError):
-                continue
-        return None
+    def __init__(self, adapter: "AIAdapter") -> None:
+        self.adapter = adapter
+        self.model_id = adapter.model_id
+        self.cache_model_ids = adapter.cache_model_ids
 
     @staticmethod
     def _prompt(requests: Sequence[DescriptionRequest]) -> str:
@@ -327,79 +281,53 @@ class GeminiDescriptionGenerator:
             f"Items: {json.dumps(records, ensure_ascii=False)}"
         )
 
-    @staticmethod
-    def _parse_response(response: Any) -> list[Mapping[str, Any]]:
-        value = getattr(response, "parsed", None)
-        if value is None:
-            value = getattr(response, "text", None)
-            if not isinstance(value, str):
-                raise DescriptionGenerationError("Gemini returned no structured response")
-            try:
-                value = json.loads(value)
-            except json.JSONDecodeError as exc:
-                raise DescriptionGenerationError("Gemini returned invalid JSON") from exc
-        if isinstance(value, Mapping):
-            value = value.get("items", value.get("results"))
-        if not isinstance(value, list) or not all(isinstance(row, Mapping) for row in value):
-            raise DescriptionGenerationError("Gemini response must be a list of result objects")
-        return value
-
-    def generate(
-        self, requests: Sequence[DescriptionRequest]
-    ) -> Mapping[str, str | None]:
-        requested_ids = {request.item_id for request in requests}
+    def generate(self, requests: Sequence[DescriptionRequest]) -> Mapping[str, str | None]:
         if not requests:
             return {}
-        response: Any = None
-        for attempt in range(4):
-            self._wait_for_slot()
-            try:
-                response = self._client.models.generate_content(
-                    model=self.model_id,
-                    contents=self._prompt(requests),
-                    config={
-                        "temperature": 0,
-                        "response_mime_type": "application/json",
-                        "response_schema": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "item_id": {"type": "string"},
-                                    "status": {
-                                        "type": "string",
-                                        "enum": ["described"],
-                                    },
-                                    "description": {"type": "string"},
-                                },
-                                "required": ["item_id", "status", "description"],
-                            },
-                        },
-                    },
-                )
-                self._last_request_at = self._clock()
-                break
-            except Exception as exc:
-                self._last_request_at = self._clock()
-                status = self._status_code(exc)
-                if status != 429 and (status is None or status < 500):
-                    raise DescriptionGenerationError(f"Gemini request failed: {exc}") from exc
-                if attempt == 3:
-                    raise DescriptionGenerationError(
-                        f"Gemini request failed after retries: {exc}"
-                    ) from exc
-                self._sleep(2**attempt)
-
-        output: dict[str, str | None] = {}
-        for row in self._parse_response(response):
-            item_id = row.get("item_id")
-            if item_id not in requested_ids:
-                continue
-            status = row.get("status")
-            description = row.get("description")
-            if status == "described" and isinstance(description, str):
-                output[item_id] = description.strip()
+        schema = {
+            "type": "object", "additionalProperties": False,
+            "properties": {"items": {"type": "array", "items": {
+                "type": "object", "additionalProperties": False,
+                "properties": {
+                    "item_id": {"type": "string"},
+                    "status": {"type": "string", "enum": ["described"]},
+                    "description": {"type": "string"},
+                },
+                "required": ["item_id", "status", "description"],
+            }}},
+            "required": ["items"],
+        }
+        try:
+            value = self.adapter.generate_json(self._prompt(requests), schema)
+        except AIError as exc:
+            raise DescriptionGenerationError(str(exc)) from exc
+        requested_ids = {request.item_id for request in requests}
+        output = {}
+        for row in value["items"]:
+            item_id = row["item_id"]
+            if item_id in requested_ids:
+                if item_id in output:
+                    raise DescriptionGenerationError("duplicate description item ID")
+                output[item_id] = row["description"].strip()
         return output
+
+
+class GeminiDescriptionGenerator(AIDescriptionGenerator):
+    """Compatibility constructor; new code should inject create_ai_adapter()."""
+
+    def __init__(self, *, model: str = "gemini-2.5-flash", requests_per_minute: float = 10,
+                 client: Any = None, api_key: str | None = None,
+                 sleep: Callable[[float], None] = time.sleep,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        from ai_adapters.gemini import GeminiAdapter
+        if client is None:
+            load_dotenv(override=True)
+        try:
+            adapter = GeminiAdapter(text_model=model, client=client, api_key=api_key,
+                                    requests_per_minute=requests_per_minute, sleep=sleep, clock=clock)
+        except AIError as exc:
+            raise DescriptionGenerationError(str(exc)) from exc
+        super().__init__(adapter)
 
 
 def generate_descriptions(
@@ -408,6 +336,7 @@ def generate_descriptions(
     cache: EnrichmentCache,
     *,
     cache_path: str | os.PathLike[str] | None = None,
+    cache_saver: Callable[[EnrichmentCache], None] | None = None,
     batch_size: int = 25,
 ) -> tuple[DescriptionResult, ...]:
     """Generate and cache descriptions, returning results in menu order."""
@@ -431,7 +360,7 @@ def generate_descriptions(
             and (
                 row.get("model_id") == CURATED_DESCRIPTION_MODEL
                 or (
-                    row.get("model_id") == generator.model_id
+                    row.get("model_id") in getattr(generator, "cache_model_ids", (generator.model_id,))
                     and row.get("prompt_version") in COMPATIBLE_PROMPT_VERSIONS
                 )
             )
@@ -468,5 +397,7 @@ def generate_descriptions(
             cache.descriptions[request.item_id] = _row_from_result(result)
         if cache_path is not None:
             cache.save(cache_path)
+        if cache_saver is not None:
+            cache_saver(cache)
 
     return tuple(results[request.item_id] for request in requests)

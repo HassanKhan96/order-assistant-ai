@@ -296,13 +296,22 @@ Sparse menu records can be enriched with non-safety semantic attributes such as:
 
 All inferred attributes must be marked as inferred. The LLM may propose likely ingredients for retrieval context, but unverified ingredients must not be used to guarantee allergy or dietary suitability.
 
-For the prototype, Gemini generates short descriptions only when source text is
+For the prototype, the selected AI adapter generates short descriptions only when source text is
 missing or is a placeholder. Strands Decider 2B runs locally to score a closed,
 versioned tag and scale vocabulary. Tags are applied automatically at a 0.7
 threshold, except broadly positive `shareable` and `comfort_food` tags. Generated
 descriptions and accepted tags use `AttributedValue` provenance and are never
 used for allergen, dietary, price, or availability decisions. Model outputs are
 cached by their input content, model, prompt, and vocabulary versions.
+
+`AIAdapter` is the provider-neutral abstract interface for structured JSON
+generation and document/query embeddings. Separate Gemini and OpenAI adapters
+translate this contract to each SDK. `create_ai_adapter()` selects the backend
+with `AI_PROVIDER`; provider-specific text and embedding model settings remain
+in configuration. Description and dietary prompts belong to domain modules.
+Strands scoring remains a local implementation. JSON output and embedding
+shape/finiteness are checked at the adapter boundary, with bounded retries for
+rate limits and server errors and no automatic cross-provider fallback.
 
 A separate dietary inference step follows description enrichment and precedes
 retrieval-document construction:
@@ -345,6 +354,14 @@ cached separately from the canonical menu and invalidated when the input text,
 model, or prompt version changes. This keeps `MenuItem.dietary_attributes`
 reserved for source-declared or manually confirmed facts.
 
+Saved JSON enrichment files can be imported into PostgreSQL without model
+calls. `import_enrichment.py` preserves historical cache entries and applies
+only descriptions and semantic scores whose input hashes match the current
+normalized menu. Dietary hints are stored in `dietary_inference_cache`, outside
+the verified canonical fields; consumers must check input hashes and model/prompt
+versions before use. The import reports both stored and current/applied counts.
+It does not automatically add dietary hints to retrieval ranking.
+
 Dietary hints may improve semantic discovery or soft-preference ranking. They
 must not satisfy a hard dietary constraint, be presented as verified, or be
 silently promoted into `dietary_attributes`. If a strict request has only
@@ -382,7 +399,24 @@ The initial retrieval layer should support:
 - Structured metadata for price, currency, category, availability, variants, and verified dietary properties.
 - Optional lexical search for exact item names and category terms.
 
-For a small notebook menu, an in-memory index is sufficient. The design must not depend on a particular vector database.
+PostgreSQL is the canonical structured store from the first end-to-end
+retrieval implementation. The `pgvector` extension stores embeddings alongside
+the facts used for deterministic filtering. An in-memory adapter may still be
+used by isolated tests, but files and notebook state are not the system of
+record. Retrieval code must remain behind a store interface so a dedicated
+vector service can be introduced later if measured scale or latency requires it.
+
+The Gemini adapter uses `gemini-embedding-001` with separate document/query
+task types; the OpenAI adapter defaults to `text-embedding-3-small`. Both default
+to 768 dimensions and unit normalization. Indexing
+batches inputs and replaces one model's documents atomically after validating
+all vectors. Unchanged-vector reuse is deferred. Replacing the canonical menu
+invalidates its embeddings; re-index before semantic retrieval.
+Vector model identities include provider, model, dimensions, and retrieval
+strategy version. Switching provider or model requires indexing that identity
+before semantic search. Existing enriched menu facts remain reusable. Legacy
+Gemini text cache identities are accepted; new generation records use
+provider-qualified identities. See `AI_PROVIDERS.md` for configuration.
 
 ## 10. Customer request model
 
@@ -470,6 +504,28 @@ Candidate retrieval combines:
 4. Optional reranking against the original request.
 
 Filtering may occur before or after vector retrieval depending on the selected index, but every final candidate must pass deterministic validation.
+
+The implemented prototype (`menu_retrieval.py`, notebook 04) combines pgvector
+results with token-overlap and exact-name matching over the persisted canonical
+snapshot. Reciprocal-rank fusion uses a constant of 60 and stable identifier
+tie-breaking. Each branch enforces explicit price, currency, category, verified
+dietary, and availability filters before fusion. Unknown availability requires
+an explicit opt-in and retains its unknown label. Item availability is checked
+in addition to variant availability.
+
+Candidate prices include a cheapest valid configuration of required custom
+groups, with selected choice IDs exposed alongside the total. Optional groups
+are omitted; required groups select at least one option and satisfy their
+minimum/maximum limits. Unavailable or unresolved required options prevent a
+candidate unless unknown availability was explicitly allowed. Candidate scores
+are retrieval ranks, not confidence or proof of semantic relevance.
+
+At this stage filters are supplied by application code; query text alone does
+not enforce constraints. Allergen requests, intent extraction, controlled
+fallback, and final recommendation validation remain outside this interface.
+Semantic retrieval examines at most 100 vector candidates; approximate-index
+filtering can further reduce recall. Lexical scanning is acceptable at prototype
+menu scale and can move to PostgreSQL full-text search if measurement warrants it.
 
 ### 11.4 Ranking
 
@@ -615,7 +671,7 @@ Returning structured results before generating prose makes the system testable a
 
 ### Notebook 1: End-to-end item recommendation
 
-Objective: prove the complete recommendation loop using a small in-memory menu.
+Objective: prove the complete recommendation loop using a small persisted menu.
 
 Planned sections:
 
@@ -623,7 +679,7 @@ Planned sections:
 2. Create a representative sample menu with categories, items, and variants.
 3. Normalize and validate the menu.
 4. Generate semantic enrichment and embedding documents.
-5. Build an in-memory vector index.
+5. Persist the canonical menu and build a pgvector index.
 6. Use an LLM to extract structured intent from customer requests.
 7. Run hybrid retrieval with metadata constraints.
 8. Produce exact results and controlled fallback alternatives.
@@ -652,7 +708,8 @@ When the notebook behavior is reliable:
 
 - Move reusable models and services into a Python package.
 - Keep notebooks as experiments and demonstrations.
-- Add persistent structured and vector storage if scale requires it.
+- Evolve the PostgreSQL schema and introduce a dedicated vector service only if
+  measured scale or latency requires it.
 - Expose a service API.
 - Add conversational session state, logging, monitoring, and feedback.
 
@@ -714,7 +771,7 @@ These traces are essential for distinguishing retrieval failures, extraction fai
 - Exact matches and nearest alternatives will be represented separately.
 - Safety constraints will not be relaxed.
 - Immutable data classes are the canonical model representation.
-- Gemini free tier generates guarded inferred descriptions for sparse items.
+- A configurable Gemini or OpenAI adapter generates guarded inferred descriptions for sparse items.
 - Strands Decider 2B scores semantic tags and scales locally; tags are applied automatically at a 0.7 threshold.
 
 ## 20. Open decisions
@@ -722,8 +779,8 @@ These traces are essential for distinguishing retrieval failures, extraction fai
 These choices should be made close to implementation, after a small experiment where appropriate:
 
 - LLM provider and model for intent extraction and response generation.
-- Embedding provider and model.
-- Local in-memory vector library for the first notebook.
+- Embedding quality evaluation and whether to retain the initial Gemini adapter.
+- Embedding dimensions and model, which are recorded with indexed documents.
 - Policy for recommending an item whose availability is unknown.
 - Exact boundary between a hard constraint and a soft preference.
 - Reranking method: heuristics, embedding score, LLM reranker, or a combination.
@@ -751,3 +808,6 @@ Record future architectural decisions here so changes remain understandable.
 | 2026-09-27 | Ground LLM output in validated menu candidates | Prevents invented items and incorrect factual claims | Accepted |
 | 2026-10-05 | Use immutable data classes for the canonical domain model | Keeps normalization and enrichment transformations explicit and testable | Accepted |
 | 2026-10-05 | Use Gemini for guarded missing descriptions and local Strands Decider 2B for semantic scoring | Improves sparse-item retrieval while keeping inferred data separate from safety facts | Accepted |
+| 2026-10-09 | Use PostgreSQL with pgvector as the initial canonical and retrieval store | Persistence is required independently of scale, and co-locating vectors with menu facts avoids cross-store synchronization | Accepted |
+| 2026-10-13 | Start retrieval with Gemini text embeddings and reciprocal-rank fusion over vector and lexical results | Reuses the existing SDK and keeps prototype ranking inspectable; quality evaluation remains pending | Prototype default |
+| 2026-10-13 | Introduce an abstract AI interface with separate Gemini and OpenAI adapters selected by `AI_PROVIDER` | Allows provider/model changes without coupling notebook workflows to either SDK; retains explicit cache and vector provenance | Accepted |

@@ -22,7 +22,23 @@ source of truth for intended behavior and scope.
 - `02_semantic_enrichment.ipynb`: enrichment workflow, inspection, and quality comparison.
 - `03_dietary_inference.ipynb`: cached, unverified vegetarian and vegan suggestions for discovery experiments.
 - `requirements-enrichment.txt`: optional Gemini and Strands dependencies.
+- `menu_storage.py`: PostgreSQL persistence, embedding-document construction, and filtered vector search.
+- `db/001_initial.sql`: relational and pgvector schema.
+- `STORAGE.md`: local database setup and ingestion/indexing workflow.
+- `requirements-storage.txt`: PostgreSQL driver dependency.
+- `test_menu_storage.py`: offline storage and indexing tests.
+- `menu_embeddings.py`: batched Gemini document/query embedding adapter.
+- `menu_retrieval.py`: hybrid candidate retrieval and deterministic configuration checks.
+- `04_embeddings_retrieval.ipynb`: persisted-menu indexing and retrieval inspection.
+- `test_menu_retrieval.py`: offline adapter, filtering, configuration, and fusion tests.
+- `test_menu_storage_integration.py`: opt-in PostgreSQL/pgvector tests with rolled-back schemas.
 - `test_semantic_enrichment.py`: offline enrichment, cache, and adapter tests.
+- `import_enrichment.py`: import saved enrichment caches and apply matching results without model calls.
+- `menu_dietary.py`: dietary-hint validation and source-input fingerprints.
+- `test_import_enrichment.py`: current/stale cache import regression tests.
+- `ai_adapters/`: abstract AI interface, configuration factory, and separate Gemini/OpenAI implementations.
+- `AI_PROVIDERS.md`: provider selection, model settings, and cache/index switching behavior.
+- `test_ai_adapters.py`: shared-contract and provider-switch regression tests.
 
 ## Core invariants
 
@@ -64,10 +80,10 @@ source of truth for intended behavior and scope.
 
 ## Near-term direction
 
-Follow the roadmap in `DESIGN.md`. The next work is embeddings and hybrid
-retrieval, followed by structured intent extraction, deterministic candidate
-filtering and ranking, grounded response generation, and repeatable
-recommendation-quality evaluation.
+Follow the roadmap in `DESIGN.md`. Embeddings and hybrid candidate retrieval
+are implemented with explicit filters and minimum configured prices. The next
+work is structured intent extraction, controlled fallback, grounded response
+generation and validation, and repeatable recommendation-quality evaluation.
 
 ## Scope guardrails
 
